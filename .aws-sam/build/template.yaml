@@ -1,0 +1,198 @@
+AWSTemplateFormatVersion: 2010-09-09
+Description: server
+Transform:
+- AWS::Serverless-2016-10-31
+Globals:
+  Function:
+    Tracing: Active
+  Api:
+    TracingEnabled: true
+Resources:
+  MyVpc:
+    Type: AWS::EC2::VPC
+    Properties:
+      CidrBlock: 10.0.0.0/16
+      Tags:
+      - Key: Name
+        Value: my-vpc
+  MySubnet1:
+    Type: AWS::EC2::Subnet
+    Properties:
+      AvailabilityZone: ap-south-1a
+      CidrBlock: 10.0.1.0/24
+      VpcId:
+        Ref: MyVpc
+      Tags:
+      - Key: Name
+        Value: my-subnet-1
+  MySubnet2:
+    Type: AWS::EC2::Subnet
+    Properties:
+      AvailabilityZone: ap-south-1b
+      CidrBlock: 10.0.2.0/24
+      VpcId:
+        Ref: MyVpc
+      Tags:
+      - Key: Name
+        Value: my-subnet-2
+  MyDBSubnetGroup:
+    Type: AWS::RDS::DBSubnetGroup
+    Properties:
+      DBSubnetGroupName: MyDBSubnetGroup
+      DBSubnetGroupDescription: My DB subnet group
+      SubnetIds:
+      - Ref: MySubnet1
+      - Ref: MySubnet2
+  MySecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: Security group allowing all traffic
+      VpcId:
+        Ref: MyVpc
+      SecurityGroupIngress:
+      - IpProtocol: -1
+        CidrIp: '0.0.0.0/0'
+      SecurityGroupEgress:
+      - IpProtocol: -1
+        CidrIp: '0.0.0.0/0'
+  MyDB:
+    Type: AWS::RDS::DBInstance
+    Properties:
+      DBName: ToDoTable
+      Engine: mysql
+      EngineVersion: 8.0.25
+      DBInstanceClass: db.t3.micro
+      MasterUsername: Pradyumn
+      MasterUserPassword: Golu245701
+      DBSubnetGroupName:
+        Ref: MyDBSubnetGroup
+      VPCSecurityGroups:
+      - Ref: MySecurityGroup
+      MultiAZ: false
+      PubliclyAccessible: false
+      StorageEncrypted: true
+      AllocatedStorage: 20
+      Tags:
+      - Key: Project
+        Value: MyProject
+  RDSReadOnlyPolicy:
+    Type: AWS::IAM::ManagedPolicy
+    Properties:
+      Description: Allows read-only access to RDS DB instance
+      PolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+        - Effect: Allow
+          Action:
+          - rds-db:connect
+          - rds:DescribeDBInstances
+          - rds:DescribeDBLogFiles
+          - rds:DownloadDBLogFilePortion
+          - rds:ListTagsForResource
+          - rds:ViewDBLogFiles
+          Resource:
+          - Fn::Sub: arn:aws:rds:${AWS::Region}:${AWS::AccountId}:db:${MyDB}
+  LambdaExecutionRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+        - Effect: Allow
+          Principal:
+            Service:
+            - lambda.amazonaws.com
+          Action:
+          - sts:AssumeRole
+      Description: Lambda execution role
+      ManagedPolicyArns:
+      - Ref: RDSReadOnlyPolicy
+      Policies:
+      - PolicyName: AllowInvokeLambda
+        PolicyDocument:
+          Version: '2012-10-17'
+          Statement:
+          - Effect: Allow
+            Action: lambda:InvokeFunction
+            Resource:
+              Fn::GetAtt:
+              - getS3Function
+              - Arn
+  getAllItemsFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      Handler: src/handlers/get-all-items.getAllItemsHandler
+      Runtime: nodejs16.x
+      Architectures:
+      - x86_64
+      MemorySize: 128
+      Timeout: 100
+      Description: A simple example includes a HTTP get method to get all items from
+        a DocumentDB table.
+      Environment:
+        Variables:
+          ENDPOINT:
+            Fn::GetAtt:
+            - MyDB
+            - Endpoint.Address
+          MY_OTHER_LAMBDA_ARN:
+            Fn::GetAtt:
+            - getS3Function
+            - Arn
+      Events:
+        Api:
+          Type: Api
+          Properties:
+            Path: /
+            Method: GET
+      Role:
+        Fn::GetAtt:
+        - LambdaExecutionRole
+        - Arn
+      CodeUri: getAllItemsFunction
+    Metadata:
+      SamResourceId: getAllItemsFunction
+  getS3Function:
+    Type: AWS::Serverless::Function
+    Properties:
+      Handler: src/handlers/gets3.gets3Handler
+      Runtime: nodejs16.x
+      Architectures:
+      - x86_64
+      MemorySize: 128
+      Timeout: 100
+      Description: Call S3.
+      Events:
+        Api:
+          Type: Api
+          Properties:
+            Path: /getS3
+            Method: GET
+      CodeUri: getS3Function
+    Metadata:
+      SamResourceId: getS3Function
+  ApplicationResourceGroup:
+    Type: AWS::ResourceGroups::Group
+    Properties:
+      Name:
+        Fn::Join:
+        - ''
+        - - ApplicationInsights-SAM-
+          - Ref: AWS::StackName
+      ResourceQuery:
+        Type: CLOUDFORMATION_STACK_1_0
+  ApplicationInsightsMonitoring:
+    Type: AWS::ApplicationInsights::Application
+    Properties:
+      ResourceGroupName:
+        Fn::Join:
+        - ''
+        - - ApplicationInsights-SAM-
+          - Ref: AWS::StackName
+      AutoConfigurationEnabled: 'true'
+    DependsOn: ApplicationResourceGroup
+Outputs:
+  WebEndpoint:
+    Description: API Gateway endpoint URL for Prod stage
+    Value:
+      Fn::Sub: https://${ServerlessRestApi}.execute-api.${AWS::Region}.amazonaws.com/Prod/
